@@ -1,27 +1,39 @@
 # A2A Invoice Action Agent
 
-FastAPI implementation of the A2A 1.0 invoice proposal/receipt lifecycle.
+FastAPI implementation of the A2A 1.0 invoice proposal/receipt lifecycle. It never makes a payment or performs an invoice action: it records only grader-accepted proposals as receipts.
 
-## Important limitations before grading
+## Deploy on Render
 
-This is a deployable baseline, not yet a verified grader-passing implementation. Its built-in decision function is conservative heuristic logic; exact hidden-package classification requires adapting `decide()` to the assignment's actual evidence schema or connecting a hosted model. It does not currently implement semantic decision caching, full cross-process atomic cancellation/result locking, nor durable disk on Render's free web service (the included persistent disk requires a paid Render service in many account/region configurations). Do not submit until these are addressed and exercised against the grader.
+1. Open the repository in Render and choose **New → Blueprint** (not a manual Web Service), so Render reads `render.yaml` and creates both the free web service and free Postgres database.
+2. During setup, provide `OPENAI_API_KEY`. The default model is `gpt-4o-mini` (override with `OPENAI_MODEL` if needed).
+3. Deploy. Render's `RENDER_EXTERNAL_HOSTNAME` is used to publish the Agent Card base URL automatically.
+4. The public base URL to submit is `https://YOUR-SERVICE.onrender.com/a2a/`. The card is at `https://YOUR-SERVICE.onrender.com/.well-known/agent-card.json`.
 
-## Run locally
+The blueprint uses Render Free Web Service and Free Postgres in Singapore. Render documents that Free web services spin down after inactivity, while a Free Postgres database expires after 30 days. This is acceptable for short-lived grading but not long-term production storage.
+
+## Protocol
+
+- Public discovery: `GET /.well-known/agent-card.json`.
+- API base: `/a2a/`; endpoints are relative to the advertised base URL.
+- Every non-card route requires a non-empty exact `Authorization: Bearer <token>` value. Each distinct bearer token maps to a separate principal.
+- Every protected request requires `A2A-Version: 1.0`; every POST requires `Content-Type: application/a2a+json`.
+- Proposal creation returns `TASK_STATE_INPUT_REQUIRED` with one proposal artifact. A continuation must match the owner, task, context, batch, package IDs, action IDs, and actions. Only accepted results appear in the final receipt artifact.
+- Message idempotency hashes recursively key-sorted compact JSON of `message` only. A changed semantic message under the same principal/message ID returns 409.
+- Decisions are cached by canonical semantic package content (excluding package/task/batch namespace identifiers). Model work happens only for uncached packages and is sent in one batched API call.
+- Postgres advisory locks serialize same-message retries; row locks serialize result/cancel terminal transitions. SQLite is available for local tests.
+
+## Local run
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-export A2A_BEARER_TOKENS='replace-with-long-random-token'
-export A2A_BASE_URL='https://YOUR-HOST/a2a/'
+export OPENAI_API_KEY='your-key'
+export A2A_BASE_URL='https://your-host/a2a/'
+export DB_PATH='./agent.db'
 uvicorn app.main:app --reload
 ```
 
-Discovery: `GET /.well-known/agent-card.json`
-API base: `/a2a/`
+## Important grading caveat
 
-All non-card routes require `Authorization: Bearer ...` and `A2A-Version: 1.0`. POST additionally requires `Content-Type: application/a2a+json`.
-
-## Deployment
-
-Create a Render Web Service from this GitHub repository. Configure `A2A_BEARER_TOKENS` with a long random token and set `A2A_BASE_URL` to the exact final base URL ending in `/a2a/`. Check whether persistent disks are available on your selected Render plan before relying on SQLite persistence.
+The project has been smoke-tested locally for proposal creation, output media type, message replay/conflict, accepted receipt creation, terminal immutability and owner isolation. It has not been run against the hidden core/audit batches. The model prompt requires exact decisive references, but accurate decisions depend on the hidden invoice package schema and its evidence layout. Run Check/Save and correct any feedback before assuming full marks. Do not deploy without an AI API key; heuristic fallback exists only for local development and is not suitable for hidden-test accuracy.
